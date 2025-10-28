@@ -26,6 +26,8 @@
 
 #include <nuttx/config.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <nuttx/sensors/as5600.h>
 
 /****************************************************************************
  * Public Functions
@@ -37,6 +39,24 @@
 
 int main(int argc, FAR char *argv[])
 {
-  printf("Hello, World!!\n");
-  return 0;
+  printf("Hello, NuttX world!\n");
+
+  int as5600_fd  = open("/dev/as5600", O_RDWR);
+  if (as5600_fd < 0)
+  {
+    printf("Failed to open /dev/as5600\n");
+    return -1;
+  }
+  struct as5600_reg_io_s reg_io;
+  uint8_t buff[2];
+  reg_io.reg = 0x0C; // Example register address
+  reg_io.buflen = 2;    // Number of bytes to read
+  reg_io.data   = buff; // Pointer to store read data
+
+  ioctl(as5600_fd, AS5600_IOC_READ_REG, &reg_io); // Fill in with appropriate arguments
+
+  printf("Read data from AS5600 register 0x%02X: %x, %x ", reg_io.reg, reg_io.data[0], reg_io.data[1]);
+
+  
+  close(as5600_fd);
 }
