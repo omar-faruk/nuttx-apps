@@ -31,7 +31,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
-#include <debug.h>
+#include <nuttx/debug.h>
 #include <sched.h>
 #include <unistd.h>
 
@@ -41,6 +41,7 @@
 
 #include <nuttx/version.h>
 #include <nuttx/sched_note.h>
+#include <nuttx/lib/lib.h>
 
 #include "nsh.h"
 #include "nsh_console.h"
@@ -264,6 +265,12 @@ static const char   g_redirect_out2[]   = ">>";
 static const size_t g_redirect_out2_len = sizeof(g_redirect_out2) - 1;
 static const char   g_redirect_in1[]    = "<";
 static const size_t g_redirect_in1_len  = sizeof(g_redirect_in1) - 1;
+static const char   g_redirect_err1[]   = "2>";
+static const size_t g_redirect_err1_len = sizeof(g_redirect_err1) - 1;
+static const char   g_redirect_err2[]   = "2>>";
+static const size_t g_redirect_err2_len = sizeof(g_redirect_err2) - 1;
+static const char   g_redirect_err3[]   = "2>&1";
+static const size_t g_redirect_err3_len = sizeof(g_redirect_err3) - 1;
 #ifdef CONFIG_NSH_PIPELINE
 static const char   g_pipeline1[]       = "|";
 static const size_t g_pipeline1_len     = sizeof(g_pipeline1) - 1;
@@ -310,6 +317,7 @@ const char g_userprompt[]        = "login: ";
 const char g_passwordprompt[]    = "password: ";
 const char g_loginsuccess[]      = "\nUser Logged-in!\n";
 const char g_badcredentials[]    = "\nInvalid username or password\n";
+const char g_badidentity[]       = "\nUnknown user identity\n";
 const char g_loginfailure[]      = "Login failed!\n";
 #endif
 
@@ -349,6 +357,7 @@ static void nsh_memlist_add(FAR struct nsh_memlist_s *memlist,
   if (memlist && allocation)
     {
       int index = memlist->nallocs;
+
       if (index < CONFIG_NSH_MAXALLOCS)
         {
           memlist->allocations[index] = allocation;
@@ -391,6 +400,7 @@ static void nsh_alist_add(FAR struct nsh_alist_s *alist,
   if (alist && alias)
     {
       int index = alist->nallocs;
+
       if (index < CONFIG_NSH_ALIAS_MAX_AMOUNT)
         {
           alias->exp = 1;
@@ -503,6 +513,7 @@ static int nsh_execute(FAR struct nsh_vtbl_s *vtbl,
                        FAR const struct nsh_param_s *param)
 {
   int fd_out = STDOUT_FILENO;
+  int fd_err = STDERR_FILENO;
   int fd_in = STDIN_FILENO;
   int ret;
 
@@ -703,11 +714,36 @@ static int nsh_execute(FAR struct nsh_vtbl_s *vtbl,
             }
         }
 
-      /* Handle redirection of stdin/stdout file descriptor */
+      /* Redirected error output? */
 
-      if (vtbl->np.np_redir_out || vtbl->np.np_redir_in)
+      if (vtbl->np.np_redir_err)
         {
-          nsh_redirect(vtbl, fd_in, fd_out, save);
+          if (param->file_err)
+            {
+              /* 2> file: Open the redirection file for stderr */
+
+              fd_err = open(param->file_err, param->oflags_err, 0666);
+              if (fd_err < 0)
+                {
+                  nsh_error(vtbl, g_fmtcmdfailed, argv[0], "open",
+                            NSH_ERRNO);
+                  return nsh_saveresult(vtbl, true);
+                }
+            }
+          else
+            {
+              /* 2>&1: redirect stderr to current stdout fd */
+
+              fd_err = fd_out;
+            }
+        }
+
+      /* Handle redirection of stdin/stdout/stderr file descriptor */
+
+      if (vtbl->np.np_redir_out || vtbl->np.np_redir_in ||
+          vtbl->np.np_redir_err)
+        {
+          nsh_redirect(vtbl, fd_in, fd_out, fd_err, save);
         }
 
       /* Then execute the command in "foreground" -- i.e., while the user
@@ -723,9 +759,12 @@ static int nsh_execute(FAR struct nsh_vtbl_s *vtbl,
        * file descriptor.
        */
 
-      if (vtbl->np.np_redir_out || vtbl->np.np_redir_in)
+      if (vtbl->np.np_redir_out || vtbl->np.np_redir_in ||
+          vtbl->np.np_redir_err)
         {
           nsh_undirect(vtbl, save);
+          fd_out = -1;
+          fd_in = -1;
         }
     }
 
@@ -883,10 +922,13 @@ static FAR char *nsh_cmdparm(FAR struct nsh_vtbl_s *vtbl, FAR char *cmdline,
     {
       .fd_in      = -1,
       .fd_out     = -1,
+      .fd_err     = -1,
       .oflags_in  = 0,
       .oflags_out = O_WRONLY | O_CREAT | O_TRUNC,
+      .oflags_err = O_WRONLY | O_CREAT | O_TRUNC,
       .file_in    = NULL,
-      .file_out   = NULL
+      .file_out   = NULL,
+      .file_err   = NULL
     };
 
   FAR char *tmpfile;
@@ -1519,6 +1561,7 @@ static FAR char *nsh_argexpand(FAR struct nsh_vtbl_s *vtbl,
       /* Verify that the final character is also a back-quote */
 
       FAR char *rptr = nsh_strchr(cmdline + 1, '`');
+
       if (!rptr || rptr[1] != '\0')
         {
           nsh_error(vtbl, g_fmtnomatching, "`", "`");
@@ -1697,6 +1740,7 @@ static FAR char *nsh_argument(FAR struct nsh_vtbl_s *vtbl,
               /* Yes, find the terminator and continue from there */
 
               FAR char *qend = nsh_strchr(pend + 1, *pend);
+
               if (!qend)
                 {
                   /* No terminator found, get out */
@@ -2445,10 +2489,13 @@ static int nsh_parse_command(FAR struct nsh_vtbl_s *vtbl, FAR char *cmdline)
     {
       .fd_in      = -1,
       .fd_out     = -1,
+      .fd_err     = -1,
       .oflags_in  = 0,
       .oflags_out = 0,
+      .oflags_err = 0,
       .file_in    = NULL,
-      .file_out   = NULL
+      .file_out   = NULL,
+      .file_err   = NULL
     };
 
 #ifdef CONFIG_NSH_PIPELINE
@@ -2467,6 +2514,7 @@ static int nsh_parse_command(FAR struct nsh_vtbl_s *vtbl, FAR char *cmdline)
   int       ret;
   bool      redirect_out_save = false;
   bool      redirect_in_save = false;
+  bool      redirect_err_save = false;
 #ifdef CONFIG_NSH_PIPELINE
   bool      bg_save = false;
 #endif
@@ -2490,6 +2538,7 @@ static int nsh_parse_command(FAR struct nsh_vtbl_s *vtbl, FAR char *cmdline)
 
   vtbl->np.np_redir_out = false;
   vtbl->np.np_redir_in = false;
+  vtbl->np.np_redir_err = false;
 
   /* Parse out the command at the beginning of the line */
 
@@ -2690,6 +2739,60 @@ static int nsh_parse_command(FAR struct nsh_vtbl_s *vtbl, FAR char *cmdline)
           param.oflags_in       = O_RDONLY;
           param.file_in         = nsh_getfullpath(vtbl, arg);
         }
+      else if (!strncmp(argv[argc], g_redirect_err3, g_redirect_err3_len))
+        {
+          redirect_err_save     = vtbl->np.np_redir_err;
+          vtbl->np.np_redir_err = true;
+          param.fd_err          = STDOUT_FILENO;
+        }
+      else if (!strncmp(argv[argc], g_redirect_err2, g_redirect_err2_len))
+        {
+          FAR char *arg;
+          if (argv[argc][g_redirect_err2_len])
+            {
+              arg = &argv[argc][g_redirect_err2_len];
+            }
+          else
+            {
+              arg = nsh_argument(vtbl, &saveptr, &memlist, NULL, &isenvvar);
+            }
+
+          if (!arg)
+            {
+              nsh_error(vtbl, g_fmtarginvalid, cmd);
+              ret = ERROR;
+              goto dynlist_free;
+            }
+
+          redirect_err_save     = vtbl->np.np_redir_err;
+          vtbl->np.np_redir_err = true;
+          param.oflags_err      = O_WRONLY | O_CREAT | O_APPEND;
+          param.file_err        = nsh_getfullpath(vtbl, arg);
+        }
+      else if (!strncmp(argv[argc], g_redirect_err1, g_redirect_err1_len))
+        {
+          FAR char *arg;
+          if (argv[argc][g_redirect_err1_len])
+            {
+              arg = &argv[argc][g_redirect_err1_len];
+            }
+          else
+            {
+              arg = nsh_argument(vtbl, &saveptr, &memlist, NULL, &isenvvar);
+            }
+
+          if (!arg)
+            {
+              nsh_error(vtbl, g_fmtarginvalid, cmd);
+              ret = ERROR;
+              goto dynlist_free;
+            }
+
+          redirect_err_save     = vtbl->np.np_redir_err;
+          vtbl->np.np_redir_err = true;
+          param.oflags_err      = O_WRONLY | O_CREAT | O_TRUNC;
+          param.file_err        = nsh_getfullpath(vtbl, arg);
+        }
 #ifdef CONFIG_NSH_PIPELINE
       else if (!strncmp(argv[argc], g_pipeline1, g_pipeline1_len))
         {
@@ -2845,6 +2948,18 @@ dynlist_free:
       vtbl->np.np_redir_in = redirect_in_save;
     }
 #endif
+
+  /* Free the redirected error file path and restore state */
+
+  if (param.file_err)
+    {
+      nsh_freefullpath((char *)param.file_err);
+    }
+
+  if (vtbl->np.np_redir_err)
+    {
+      vtbl->np.np_redir_err = redirect_err_save;
+    }
 
   NSH_ALIASLIST_FREE(vtbl, &alist);
   NSH_MEMLIST_FREE(&memlist);

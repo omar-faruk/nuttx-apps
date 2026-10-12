@@ -48,7 +48,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
-#include <debug.h>
+#include <nuttx/debug.h>
 #include <pthread.h>
 
 #include <arpa/inet.h>
@@ -91,6 +91,7 @@
 #define DHCP_OPTION_ROUTER      3
 #define DHCP_OPTION_DNS_SERVER  6
 #define DHCP_OPTION_HOST_NAME   12
+#define DHCP_OPTION_NTP_SERVER  42
 #define DHCP_OPTION_REQ_IPADDR  50
 #define DHCP_OPTION_LEASE_TIME  51
 #define DHCP_OPTION_MSG_TYPE    53
@@ -164,6 +165,7 @@ static FAR uint8_t *dhcpc_addhostname(FAR const char *hostname,
                                       FAR uint8_t *optptr)
 {
   int len = strlen(hostname);
+
   *optptr++ = DHCP_OPTION_HOST_NAME;
   *optptr++ = len;
   memcpy(optptr, hostname, len);
@@ -210,10 +212,11 @@ static FAR uint8_t *dhcpc_addclientid(FAR uint8_t *clientid,
 static FAR uint8_t *dhcpc_addreqoptions(FAR uint8_t *optptr)
 {
   *optptr++ = DHCP_OPTION_REQ_LIST;
-  *optptr++ = 3;
+  *optptr++ = 4;
   *optptr++ = DHCP_OPTION_SUBNET_MASK;
   *optptr++ = DHCP_OPTION_ROUTER;
   *optptr++ = DHCP_OPTION_DNS_SERVER;
+  *optptr++ = DHCP_OPTION_NTP_SERVER;
   return optptr;
 }
 
@@ -378,15 +381,69 @@ static uint8_t dhcpc_parseoptions(FAR struct dhcpc_state *presult,
 
           case DHCP_OPTION_DNS_SERVER:
 
-            /* Get the DNS server address in network order */
+            /* Get the DNS server addresses in network order.
+             * DHCP option 6 can contain multiple DNS server addresses,
+             * each 4 bytes long.
+             */
 
-            if (optptr + 6 <= end)
+            if (optptr + 2 <= end)
               {
-                memcpy(&presult->dnsaddr.s_addr, optptr + 2, 4);
+                uint8_t optlen = *(optptr + 1);
+                uint8_t num_dns = optlen / 4;
+                uint8_t i;
+
+                /* Limit to configured maximum */
+
+                if (num_dns > CONFIG_NETDB_DNSSERVER_NAMESERVERS)
+                  {
+                    num_dns = CONFIG_NETDB_DNSSERVER_NAMESERVERS;
+                  }
+
+                presult->num_dnsaddr = 0;
+                for (i = 0; i < num_dns && (optptr + 2 + i * 4 + 4) <= end;
+                     i++)
+                  {
+                    memcpy(&presult->dnsaddr[i].s_addr, optptr + 2 + i * 4,
+                           4);
+                    presult->num_dnsaddr++;
+                  }
               }
             else
               {
                 nerr("Packet too short (DNS address missing)\n");
+              }
+            break;
+
+          case DHCP_OPTION_NTP_SERVER:
+
+            /* Get the NTP server addresses in network order.
+             * DHCP option 42 can contain multiple IPv4 addresses,
+             * each 4 bytes long.
+             */
+
+            if (optptr + 2 <= end)
+              {
+                uint8_t optlen = *(optptr + 1);
+                uint8_t num_ntp = optlen / 4;
+                uint8_t i;
+
+                if (num_ntp > CONFIG_NETUTILS_DHCPC_NTP_SERVERS)
+                  {
+                    num_ntp = CONFIG_NETUTILS_DHCPC_NTP_SERVERS;
+                  }
+
+                presult->num_ntpaddr = 0;
+                for (i = 0; i < num_ntp && (optptr + 2 + i * 4 + 4) <= end;
+                     i++)
+                  {
+                    memcpy(&presult->ntpaddr[i].s_addr, optptr + 2 + i * 4,
+                           4);
+                    presult->num_ntpaddr++;
+                  }
+              }
+            else
+              {
+                nerr("Packet too short (NTP address missing)\n");
               }
             break;
 
@@ -420,7 +477,7 @@ static uint8_t dhcpc_parseoptions(FAR struct dhcpc_state *presult,
 
           case DHCP_OPTION_LEASE_TIME:
 
-              /* Get lease time (in seconds) in host order */
+            /* Get lease time (in seconds) in host order */
 
             if (optptr + 6 <= end)
               {
@@ -436,7 +493,7 @@ static uint8_t dhcpc_parseoptions(FAR struct dhcpc_state *presult,
 
           case DHCP_OPTION_T1_TIME:
 
-              /* Get renewal (T1) time (in seconds) in host order */
+            /* Get renewal (T1) time (in seconds) in host order */
 
             if (optptr + 6 <= end)
               {
@@ -452,7 +509,7 @@ static uint8_t dhcpc_parseoptions(FAR struct dhcpc_state *presult,
 
           case DHCP_OPTION_T2_TIME:
 
-              /* Get rebinding (T2) time (in seconds) in host order */
+            /* Get rebinding (T2) time (in seconds) in host order */
 
             if (optptr + 6 <= end)
               {
@@ -512,8 +569,16 @@ static void *dhcpc_run(void *args)
   struct dhcpc_state result;
   int ret;
 
+#ifndef CONFIG_ENABLE_ALL_SIGNALS
+  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+  pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+#endif
+
   while (1)
     {
+#ifndef CONFIG_ENABLE_ALL_SIGNALS
+      pthread_testcancel();
+#endif
       ret = dhcpc_request(pdhcpc, &result);
       if (ret == OK)
         {
@@ -680,7 +745,9 @@ void dhcpc_close(FAR void *handle)
 void dhcpc_cancel(FAR void *handle)
 {
   struct dhcpc_state_s *pdhcpc = (struct dhcpc_state_s *)handle;
+#ifdef CONFIG_ENABLE_ALL_SIGNALS
   sighandler_t old;
+#endif
   int ret;
 
   if (pdhcpc)
@@ -689,6 +756,7 @@ void dhcpc_cancel(FAR void *handle)
 
       if (pdhcpc->thread)
         {
+#ifdef CONFIG_ENABLE_ALL_SIGNALS
           old = signal(SIGQUIT, SIG_IGN);
 
           /* Signal the dhcpc_run */
@@ -698,6 +766,9 @@ void dhcpc_cancel(FAR void *handle)
             {
               nerr("ERROR: pthread_kill DHCPC thread\n");
             }
+#else
+          pthread_cancel(pdhcpc->thread);
+#endif
 
           /* Wait for the end of dhcpc_run */
 
@@ -708,7 +779,9 @@ void dhcpc_cancel(FAR void *handle)
             }
 
           pdhcpc->thread = 0;
+#ifdef CONFIG_ENABLE_ALL_SIGNALS
           signal(SIGQUIT, old);
+#endif
         }
     }
 }
@@ -794,13 +867,6 @@ int dhcpc_request(FAR void *handle, FAR struct dhcpc_state *presult)
                         (uint32_t)ntohl(presult->serverid.s_addr));
                   pdhcpc->ipaddr.s_addr   = presult->ipaddr.s_addr;
                   pdhcpc->serverid.s_addr = presult->serverid.s_addr;
-
-                  /* Temporarily use the address offered by the server
-                   * and break out of the loop.
-                   */
-
-                  netlib_set_ipv4addr(pdhcpc->interface,
-                                      &presult->ipaddr);
                   state = STATE_HAVE_OFFER;
                 }
             }
@@ -844,8 +910,12 @@ int dhcpc_request(FAR void *handle, FAR struct dhcpc_state *presult)
         }
 
       /* Send the REQUEST message to obtain the lease that was offered to
-       * us.
+       * us.  The offered address must not be used before the server has
+       * acknowledged it, so the REQUEST is sent from the address we had
+       * before (0.0.0.0 when unconfigured), as RFC 2131 requires.
        */
+
+      netlib_set_ipv4addr(pdhcpc->interface, &oldaddr);
 
       ninfo("Send REQUEST\n");
       if (dhcpc_sendmsg(pdhcpc, presult, DHCPREQUEST) < 0)
@@ -853,6 +923,12 @@ int dhcpc_request(FAR void *handle, FAR struct dhcpc_state *presult)
           return ERROR;
         }
 
+      /* Temporarily use the offered address so that a unicast ACK can be
+       * received.  Without UDP write buffers sendto() has returned only
+       * after the REQUEST was sent with the old source address.
+       */
+
+      netlib_set_ipv4addr(pdhcpc->interface, &pdhcpc->ipaddr);
       retries++;
 
       /* Get the ACK/NAK response to the REQUEST (or timeout) */
@@ -929,10 +1005,13 @@ int dhcpc_request(FAR void *handle, FAR struct dhcpc_state *presult)
   while (state == STATE_HAVE_OFFER &&
          retries < CONFIG_NETUTILS_DHCPC_RETRIES);
 
-  /* If no DHCPLEASE received here, error out */
+  /* If no DHCPLEASE received here, drop the offered address and error
+   * out.
+   */
 
   if (state != STATE_HAVE_LEASE)
     {
+      netlib_set_ipv4addr(pdhcpc->interface, &oldaddr);
       return ERROR;
     }
 
@@ -946,11 +1025,39 @@ int dhcpc_request(FAR void *handle, FAR struct dhcpc_state *presult)
         ip4_addr2(presult->netmask.s_addr),
         ip4_addr3(presult->netmask.s_addr),
         ip4_addr4(presult->netmask.s_addr));
-  ninfo("Got DNS server %u.%u.%u.%u\n",
-        ip4_addr1(presult->dnsaddr.s_addr),
-        ip4_addr2(presult->dnsaddr.s_addr),
-        ip4_addr3(presult->dnsaddr.s_addr),
-        ip4_addr4(presult->dnsaddr.s_addr));
+
+  /* Print all DNS servers received */
+
+  if (presult->num_dnsaddr > 0)
+    {
+      uint8_t i;
+
+      for (i = 0; i < presult->num_dnsaddr; i++)
+        {
+          ninfo("Got DNS server %d: %u.%u.%u.%u\n", i,
+                ip4_addr1(presult->dnsaddr[i].s_addr),
+                ip4_addr2(presult->dnsaddr[i].s_addr),
+                ip4_addr3(presult->dnsaddr[i].s_addr),
+                ip4_addr4(presult->dnsaddr[i].s_addr));
+        }
+    }
+
+  /* Print all NTP servers received */
+
+  if (presult->num_ntpaddr > 0)
+    {
+      uint8_t i;
+
+      for (i = 0; i < presult->num_ntpaddr; i++)
+        {
+          ninfo("Got NTP server %d: %u.%u.%u.%u\n", i,
+                ip4_addr1(presult->ntpaddr[i].s_addr),
+                ip4_addr2(presult->ntpaddr[i].s_addr),
+                ip4_addr3(presult->ntpaddr[i].s_addr),
+                ip4_addr4(presult->ntpaddr[i].s_addr));
+        }
+    }
+
   ninfo("Got default router %u.%u.%u.%u\n",
         ip4_addr1(presult->default_router.s_addr),
         ip4_addr2(presult->default_router.s_addr),

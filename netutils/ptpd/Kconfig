@@ -8,7 +8,7 @@ config NETUTILS_PTPD
 	default n
 	depends on NET_IPv4
 	depends on NET_IGMP
-	depends on NET_UDP
+	depends on NET_UDP || NET_PKT
 	---help---
 		Build a minimal implementation of IEEE-1588 precision time protocol.
 		Uses system gettimeofday() and adjtime() calls to synchronize clock
@@ -16,31 +16,6 @@ config NETUTILS_PTPD
 		other systems.
 
 if NETUTILS_PTPD
-
-config NETUTILS_PTPD_DEBUG
-	bool "Enable PTP debug messages"
-	default n
-	depends on DEBUG_INFO
-	---help---
-		Enable PTP debug messages even if CONFIG_DEBUG_NET_INFO is not enabled.
-
-config NETUTILS_PTPD_CLIENT
-	bool "Enable client support"
-	default y
-	---help---
-		Act as a PTP client, synchronizing the NuttX clock to a remote master
-		clock.
-
-config NETUTILS_PTPD_SERVER
-	bool "Enable server support"
-	default n
-	---help---
-		Act as a PTP server, providing NuttX clock time to other systems.
-
-		Both server and client can be simultaneously enabled. NuttX will then
-		synchronize to a higher priority master clock, or act as a master
-		clock itself if it has the highest priority.
-		Refer to Best Master Clock algorithm in IEEE-1588 for details.
 
 config NETUTILS_PTPD_STACKSIZE
 	int "PTP daemon stack stack size"
@@ -57,8 +32,6 @@ config NETUTILS_PTPD_DOMAIN
 	---help---
 		Set PTP domain to participate in. Default domain is 0, other domains
 		can be used to isolate reference clocks from each other.
-
-if NETUTILS_PTPD_SERVER
 
 config NETUTILS_PTPD_PRIORITY1
 	int "PTP server priority1"
@@ -161,10 +134,6 @@ config NETUTILS_PTPD_DELAYRESP_INTERVAL
 
 		Default value 4 results in 16 second interval.
 
-endif # NETUTILS_PTPD_SERVER
-
-if NETUTILS_PTPD_CLIENT
-
 config NETUTILS_PTPD_TIMEOUT_MS
 	int "PTP client timeout for changing clock source (ms)"
 	default 60000
@@ -179,6 +148,14 @@ config NETUTILS_PTPD_SETTIME_THRESHOLD_MS
 		If difference between local and remote clock exceeds this threshold,
 		time is reset with settimeofday() instead of changing the rate with
 		adjtime().
+
+config NETUTILS_PTPD_ADJTIME_THRESHOLD_NS
+	int "PTP client threshold for using accumulated ppb to adjust system time (ns)"
+	default 500
+	---help---
+		If difference between local and remote clock exceeds this threshold,
+		the PTP client can utilize current ppb instead of accumulated ppb to
+		accelerate system time adjustment.
 
 config NETUTILS_PTPD_MULTICAST_TIMEOUT_MS
 	int "PTP client timeout to rejoin multicast group (ms)"
@@ -198,14 +175,25 @@ config NETUTILS_PTPD_DRIFT_AVERAGE_S
 		gives more stable estimate but reacts slower to crystal oscillator speed
 		changes (such as caused by temperature changes).
 
-config NETUTILS_PTPD_SEND_DELAYREQ
-	bool "PTP client enable delay requests"
-	default n
+config NETUTILS_PTPD_MAX_DRIFT_PPB
+	int "PTP client maximum plausible clock drift rate (ppb)"
+	default 500000
+	range 1000 20000000
 	---help---
-		If enabled, sends delay request messages to measure the network delay
-		to server. If disabled, assumes zero delay.
+		A single drift-rate sample computed between two consecutive sync
+		updates is discarded (the previous averaged drift_ppb is kept
+		unchanged) if its magnitude exceeds this bound. Real crystal
+		oscillators drift by at most a few hundred ppm (hundreds of
+		thousands of ppb), so this catches bogus samples caused by an
+		abnormally short or long measurement interval - e.g. right after
+		a clock source outage/reconnect, or a burst of closely spaced
+		sync packets following packet loss - before they corrupt the
+		long-term drift_ppb average and get applied to the hardware.
 
-if NETUTILS_PTPD_SEND_DELAYREQ
+		This is intentionally much tighter than
+		CLOCK_ADJTIME_SLEWLIMIT_PPM, which bounds how fast a correction
+		may be applied rather than how large a real drift measurement
+		can plausibly be.
 
 config NETUTILS_PTPD_MAX_PATH_DELAY_NS
 	int "PTP client maximum path delay (ns)"
@@ -221,8 +209,75 @@ config NETUTILS_PTPD_DELAYREQ_AVGCOUNT
 	---help---
 		Measured path delay is averaged over this many samples.
 
-endif # NETUTILS_PTPD_SEND_DELAYREQ
+config NETUTILS_PTPD_OUTLIER_THRESHOLD_NS
+	int "PTP outlier rejection threshold (ns)"
+	default 0
+	range 0 1000000000
+	---help---
+		A phase error measurement that differs from the median of the
+		latest accepted ones by more than this many nanoseconds is
+		discarded instead of being used to correct the clock. It protects
+		the frequency estimate and the phase correction from a single
+		disturbed sample, for example a receive timestamp taken late by
+		the scheduler with software timestamping.
 
-endif # NETUTILS_PTPD_CLIENT
+		A change that lasts is accepted after several discarded samples in
+		a row, so the daemon still follows a real step of the master, and
+		a short burst of disturbed samples is still ridden out.
+
+		Choose a value well above the normal spread of the measurement:
+		a few microseconds are typical with hardware timestamping and
+		hundreds with software timestamping. 0 disables the rejection.
+
+config NETUTILS_PTPD_STATUSFILE
+	string "PTP daemon status file path"
+	default "/tmp/ptpd.status"
+	---help---
+		Path where the PTP daemon writes its binary status file
+		when signaled with SIGUSR1. The ptpd_status() API reads
+		this file to retrieve daemon state without requiring shared
+		memory, making it work across all build modes (Flat,
+		Protected, Kernel). Written atomically via temp + rename.
+
+config NETUTILS_PTPD_INGRESS_LATENCY_NS
+	int "PTP hardware receive timestamp latency (ns)"
+	default 0
+	range -1000000 1000000
+	---help---
+		Fixed delay, in nanoseconds, between a frame reaching the wire
+		reference plane and the moment the MAC latches its hardware
+		receive timestamp. This is the ingressLatency port parameter of
+		IEEE 1588: the PHY and the MAC clock-domain crossing make the
+		timestamp point lag the true arrival of the frame.
+
+		The latency is subtracted from every hardware receive timestamp,
+		so a positive value moves the timestamps earlier. It has no
+		effect with software timestamping. It can be overridden at
+		run time with the -I option.
+
+		The value depends on the PHY and board and has to be measured,
+		for example by comparing a physical PPS output against a
+		reference. The default of 0 applies no compensation.
+
+config NETUTILS_PTPD_EGRESS_LATENCY_NS
+	int "PTP hardware transmit timestamp latency (ns)"
+	default 0
+	range -1000000 1000000
+	depends on NET_TIMESTAMP
+	---help---
+		Fixed delay, in nanoseconds, between the MAC latching a hardware
+		transmit timestamp and the frame reaching the wire reference
+		plane. This is the egressLatency port parameter of IEEE 1588: the
+		clock domain crossing and the PHY make the frame leave later than
+		the timestamp point.
+
+		The latency is added to every hardware transmit timestamp, so a
+		positive value moves the timestamps later. It has no effect with
+		software timestamping or when the driver does not provide
+		hardware transmit timestamps. It can be overridden at run time
+		with the -O option.
+
+		The value depends on the PHY and board and has to be measured.
+		The default of 0 applies no compensation.
 
 endif # NETUTILS_PTPD

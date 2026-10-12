@@ -27,6 +27,8 @@
  * Included Files
  ****************************************************************************/
 
+#include <sys/types.h>
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -34,6 +36,26 @@
 /****************************************************************************
  * Public Types
  ****************************************************************************/
+
+enum ptp_delay_mechanism_e
+{
+  PTP_DELAY_NONE = 0,
+  PTP_DELAY_E2E,
+  PTP_DELAY_P2P
+};
+
+struct ptpd_config_s
+{
+  FAR const char *interface;
+  FAR const char *clock;
+  bool client_only;
+  bool hardware_ts;
+  enum ptp_delay_mechanism_e delay_mechanism;
+  bool bmca;
+  sa_family_t af;
+  int32_t ingress_latency_ns; /* Hardware RX timestamp latency (ns) */
+  int32_t egress_latency_ns;  /* Hardware TX timestamp latency (ns) */
+};
 
 /* PTPD status information structure */
 
@@ -93,6 +115,7 @@ struct ptpd_status_s
   struct timespec last_transmitted_announce;
   struct timespec last_transmitted_delayresp;
   struct timespec last_transmitted_delayreq;
+  struct timespec last_transmitted_pdelayreq;
 };
 
 /****************************************************************************
@@ -115,10 +138,10 @@ extern "C"
  * Name: ptpd_start
  *
  * Description:
- *   Start the PTP daemon and bind it to specified interface.
+ *   Start the PTP daemon and bind it to specified config.
  *
  * Input Parameters:
- *   interface - Name of the network interface to bind to, e.g. "eth0"
+ *   config - The configs of PTP daemon, includes interface, af and clock...
  *
  * Returned Value:
  *   On success, the non-negative task ID of the PTP daemon is returned;
@@ -126,7 +149,7 @@ extern "C"
  *
  ****************************************************************************/
 
-int ptpd_start(FAR const char *interface);
+int ptpd_start(FAR const struct ptpd_config_s *config);
 
 /****************************************************************************
  * Name: ptpd_status

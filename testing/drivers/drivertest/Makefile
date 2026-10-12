@@ -49,6 +49,11 @@ MAINSRC  += drivertest_timer.c
 PROGNAME += cmocka_driver_timer
 endif
 
+ifneq ($(CONFIG_SENSORS),)
+MAINSRC  += drivertest_sensor.c
+PROGNAME += cmocka_driver_sensor
+endif
+
 ifneq ($(CONFIG_TESTING_ONESHOT_TEST),)
 MAINSRC  += drivertest_oneshot.c
 PROGNAME += cmocka_driver_oneshot
@@ -62,7 +67,7 @@ endif
 endif
 
 ifneq ($(CONFIG_WATCHDOG),)
-ifneq ($(CONFIG_BOARDCTL_RESET_CAUSE),)
+ifneq ($(CONFIG_BOARDCTL_RESET_CAUSE)$(CONFIG_WATCHDOG_TIMEOUT_NOTIFIER),)
 MAINSRC  += drivertest_watchdog.c
 PROGNAME += cmocka_driver_watchdog
 endif

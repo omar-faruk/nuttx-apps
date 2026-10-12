@@ -20,9 +20,9 @@
 #
 # ##############################################################################
 
-set(WAMR_MODULE_DIR ${CMAKE_BINARY_DIR}/wamrmod)
+set(WAMR_MODULE_DIR ${NUTTX_BINARY_DIR}/wamrmod)
 
-if(NOT EXISTS {WAMR_MODULE_DIR})
+if(NOT EXISTS ${WAMR_MODULE_DIR})
   file(MAKE_DIRECTORY ${WAMR_MODULE_DIR})
 endif()
 

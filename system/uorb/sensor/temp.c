@@ -30,7 +30,7 @@
  * Private Functions
  ****************************************************************************/
 
-#ifdef CONFIG_DEBUG_UORB
+#ifdef CONFIG_UORB_FORMAT
 static const char sensor_temp_format[] =
   "timestamp:%" PRIu64 ",temperature:%hf";
 #endif
@@ -40,3 +40,4 @@ static const char sensor_temp_format[] =
  ****************************************************************************/
 
 ORB_DEFINE(sensor_temp, struct sensor_temp, sensor_temp_format);
+ORB_DEFINE(sensor_ambient_temp, struct sensor_temp, sensor_temp_format);

@@ -52,7 +52,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 #include "netutils/md5.h"
 
@@ -93,6 +95,7 @@
 static void byte_reverse(FAR unsigned char *buf, unsigned longs)
 {
   uint32_t t;
+
   do
     {
       t = ((uint32_t)buf[3] << 24) |

@@ -30,4 +30,16 @@ if(CONFIG_EXAMPLES_MQTTC)
     ${CONFIG_EXAMPLES_MQTTC}
     SRCS
     mqttc_pub.c)
+
+  if(CONFIG_EXAMPLES_MQTTC_SUB)
+    nuttx_add_application(
+      NAME
+      ${CONFIG_EXAMPLES_MQTTC_SUB_PROGNAME}
+      STACKSIZE
+      ${CONFIG_EXAMPLES_MQTTC_STACKSIZE}
+      MODULE
+      ${CONFIG_EXAMPLES_MQTTC}
+      SRCS
+      mqttc_sub.c)
+  endif()
 endif()

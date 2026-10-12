@@ -28,6 +28,7 @@
 #include <syslog.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/param.h>
 #include <sys/statvfs.h>
 #include <sys/resource.h>
 #include <time.h>
@@ -108,33 +109,35 @@ void test_nuttx_syscall_fsync02(FAR void **state)
   }
 
   tcases[] =
+  {
+    /* EINVAL - fsync() on pipe should not succeed. */
+
     {
-      /* EINVAL - fsync() on pipe should not succeed. */
+      &pipe_fd[1], EINVAL
+    },
 
-        {
-          &pipe_fd[1], EINVAL
-        },
+    /* EBADF - fd is closed */
 
-      /* EBADF - fd is closed */
+#  ifndef CONFIG_FDCHECK
+    {
+      &pipe_fd[0], EBADF
+    },
+#  endif
 
-        {
-          &pipe_fd[0], EBADF
-        },
+    /* EBADF - fd is invalid (-1) */
 
-      /* EBADF - fd is invalid (-1) */
+#  ifndef CONFIG_FDSAN
+    {
+      &bad_fd, EBADF
+    },
+#  endif
 
-  #ifndef CONFIG_FDSAN
-        {
-          &bad_fd, EBADF
-        },
-  #endif
+    /* EINVAL - fsync() on fifo should not succeed. */
 
-      /* EINVAL - fsync() on fifo should not succeed. */
-
-        {
-          &fifo_wfd, EINVAL
-        },
-    };
+    {
+      &fifo_wfd, EINVAL
+    },
+  };
 
   ret = mkfifo("/var/Test_Fifo_SyscallFsync02", 0666);
   assert_int_equal(ret, 0);
@@ -148,7 +151,7 @@ void test_nuttx_syscall_fsync02(FAR void **state)
 
   close(pipe_fd[0]);
 
-  for (int i = 0; i < sizeof(tcases) / sizeof(tcases[0]); i++)
+  for (int i = 0; i < nitems(tcases); i++)
     {
       ret = fsync(*(tcases[i].fd));
       if (ret != -1)
@@ -236,7 +239,7 @@ void test_nuttx_syscall_fsync03(FAR void **state)
   ret = fsync(fd);
 
   time_end = time(0);
-  assert_true(time_end != (time_t)-1);
+  assert_true(time_end != -1);
   assert_int_not_equal(ret, -1);
   assert_int_equal(ret, 0);
   assert_false(time_end < time_start);

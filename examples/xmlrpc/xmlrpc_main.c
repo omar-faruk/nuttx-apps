@@ -41,6 +41,7 @@
  * in the article at: http://www.drdobbs.com/web-development/\
  *    an-embeddable-lightweight-xml-rpc-server/184405364
  */
+
 /* Lightweight Embedded XML-RPC Server main
  *
  * mtj@cogitollc.com
@@ -51,7 +52,7 @@
  * Included Files
  ****************************************************************************/
 
-#include <debug.h>
+#include <nuttx/debug.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -133,6 +134,11 @@ static int xmlrpc_getheader(FAR char *buffer, FAR char *header,
   FAR char *temp;
   int i = 0;
 
+  if (size <= 0)
+    {
+      return -1;
+    }
+
   temp = strstr(buffer, header);
   if (temp)
     {
@@ -149,7 +155,7 @@ static int xmlrpc_getheader(FAR char *buffer, FAR char *header,
 
       /* Copy the rest to the value parameter */
 
-      while ((*temp != ' ') && (*temp != '\n') && (i < size))
+      while ((*temp != ' ') && (*temp != '\n') && (i < size - 1))
         {
           value[i++] = *temp++;
         }
@@ -212,7 +218,7 @@ static void xmlrpc_handler(int fd)
                   buffer[max] = 0;
 
                   ret = xmlrpc_getheader(buffer, "Content-Length:", value,
-                                         CONFIG_EXAMPLES_XMLRPC_BUFFERSIZE);
+                                         sizeof(value));
                   if (ret > 0)
                     loadlen = atoi(value);
                 }
@@ -334,6 +340,7 @@ static int xmlrpc_netinit(void)
     {
       struct dhcpc_state ds;
       char inetaddr[INET_ADDRSTRLEN];
+      int ret;
 
       dhcpc_request(handle, &ds);
       netlib_set_ipv4addr("eth0", &ds.ipaddr);
@@ -348,9 +355,17 @@ static int xmlrpc_netinit(void)
           netlib_set_dripv4addr("eth0", &ds.default_router);
         }
 
-      if (ds.dnsaddr.s_addr != 0)
+      for (int i = 0; i < ds.num_dnsaddr; i++)
         {
-          netlib_set_ipv4dnsaddr(&ds.dnsaddr);
+          if (ds.dnsaddr[i].s_addr != 0)
+            {
+              ret = netlib_set_ipv4dnsaddr(&ds.dnsaddr[i]);
+              if (ret < 0)
+                {
+                  nerr("ERROR: Set DNS server %d:%s address failed: %d\n",
+                       i, inet_ntoa(ds.dnsaddr[i]), ret);
+                }
+            }
         }
 
       dhcpc_close(handle);
